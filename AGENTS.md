@@ -10,6 +10,7 @@ npm test          # vitest; must pass
 npx tsc -p .      # strict type-check; must be clean
 npm run build     # must succeed
 npm run build:sync  # must succeed (bundles the CI wiki sync)
+npm run test:e2e    # browser tests in demo mode; must pass (once: npx playwright install chromium)
 npm run dev       # manual check; click "Try it with demo data" (no GitLab needed)
 ```
 
@@ -26,3 +27,4 @@ npm run dev       # manual check; click "Try it with demo data" (no GitLab neede
 - Use the local-date helpers in `dates.ts`. Never use `toISOString()` for calendar dates.
 - No `alert`, `confirm` or `prompt`.
 - Update `docs/SPEC.md` (and `README.md` if user-facing) in the same change as the behaviour change. Move backlog items to "done" or remove them when implemented.
+- **Keep the browser tests green.** A UI change that renames an id, a `data-view`/`data-tab` or a visible label used in `e2e/` must update the tests in the same change; a new screen or flow gets a test there.
