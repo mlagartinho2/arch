@@ -1,7 +1,7 @@
 # Arch: Product & Technical Specification
 
 > Audience: engineers and AI coding agents extending this codebase.
-> Status: v0.4 (2026-11-26: full-screen editors built on GitLab Everything's Markdown editor, read-only quick look; see §15 Changelog). This document describes **what exists today**. §12 lists known gaps and §13 a prioritized enhancement backlog.
+> Status: v0.4.1 (2026-11-27: browser tests with Playwright; v0.4: full-screen editors built on GitLab Everything's Markdown editor, read-only quick look; see §15 Changelog). This document describes **what exists today**. §12 lists known gaps and §13 a prioritized enhancement backlog.
 > Keep this file current: any change to behaviour, data contracts or architecture must update the matching section in the same change.
 
 ---
@@ -68,6 +68,7 @@ Arch is a capture-and-follow-up tool on top of **GitLab**, which the organisatio
 | `npm run dev` | Vite dev server (http://localhost:5173) |
 | `npm test` | Vitest, node environment, `tests/**/*.test.ts` |
 | `npm run build` | `tsc -b && vite build` → static `dist/` (relative `base: './'`, so it can be hosted under any path, e.g. GitLab Pages) |
+| `npm run test:e2e` | Builds, serves `dist/` with `vite preview` on port 4174 and runs the Playwright browser tests in `e2e/` (§10). Needs `npx playwright install chromium` once, or `ARCH_E2E_CHROME=<path to Chrome>` |
 | `npm run build:sync` | Bundles the CI wiki sync into one dependency-free Node script, `dist-sync/sync-standards-wiki.mjs` (§3.5) |
 
 Runtime dependencies: React 18, CodeMirror 6 (`@codemirror/*`, `@lezer/highlight`) for the editors, DOMPurify for rendered Markdown. `vite.config.ts` puts CodeMirror in its own `editor` chunk and React in a `react` chunk.
@@ -122,6 +123,8 @@ TypeScript is `strict` with `noUnusedLocals` and `noUnusedParameters`. There is 
 | `tests/standards.test.ts` | Document format, versions, wiki rendering; standards service against the fake (proposals, merge, publish, moves, stale changes, cycles, group wiki); CI sync |
 | `tests/prep.test.ts` | Update syntax, prep gathering, agenda rendering, applying updates against the fake GitLab |
 | `tests/migration.test.ts` | Legacy storage-key migration |
+| `e2e/*.e2e.ts`, `e2e/fixtures.ts`, `playwright.config.ts` | Browser tests in demo mode (§10) |
+| `.gitlab-ci.yml` | GitLab CI/CD: job `unit` (unit tests, CI sync build) and job `e2e` (browser tests) on merge requests and branch pushes, with JUnit reports shown in the merge request |
 | `tests/editor.test.ts` | Renderer, diff, tables, checks, markers, meeting preview, completions; task ticking against the fake |
 
 ---
@@ -736,7 +739,27 @@ Projects: `architecture/follow-ups` (id 11) and `architecture/standards` (id 12)
 
 **Rule:** new parser or date behaviour needs a unit test. A new service use case needs a fake-backed test, and any new endpoint must be added to the fake.
 
-Not covered yet: React components (no DOM tests) and a real GitLab instance. The full-screen flows were checked by hand with Playwright in demo mode (scripts not in the repository, see backlog 18).
+### Browser tests (`e2e/`, Playwright)
+
+They run against the built app in demo mode, so they need neither GitLab nor network. `e2e/fixtures.ts` gives every test:
+- a fresh demo workspace (new browser context, "Try it with demo data") with the clock fixed at **2026-11-26 09:00, Europe/Zurich**, so the seeded follow-up dates are always the same;
+- `demo`, which reads and changes the fake GitLab's database through `window.__archDemo` (demo mode only), e.g. to edit an issue "in GitLab" behind the app's back;
+- an automatic guard that fails the test if the page logs an error or throws;
+- helpers `typeAtEnd` (type into a CodeMirror editor), `editorText`, `toast` and `pick` (click a completion: CodeMirror ignores Enter for a moment after the list opens, so tests click).
+
+Covered:
+- `meeting.e2e.ts`: capture with attendee chips, the Arch toolbar, `@` completion, card preview, Items tab, status bar and `Ctrl/⌘+S`, then the meeting in Meetings and the issues in "GitLab"; an unknown `@user` (highlight, Checks tab, panel badge, partial save with the failure reported); notes from Prepare (series hint, Changes against the agenda, ticking an agenda item in the preview turns it into DONE and closes the item); the draft surviving a reload, and Cancel discarding it.
+- `items.e2e.ts`: quick look task tick (saved, markers kept); ↑/↓, Enter, ←/→ and Esc; `E` opening the description editor without typing the key, `#` completion, save with markers and history; the edit conflict (Compare, Load their version; Save mine anyway); a comment that pushes the follow-up and closes the action; nudge; deep links and an unknown number.
+- `standards.e2e.ts`: a major change with a rule from `/`, the version shown, the body and whole-file diffs, the merge request in "GitLab"; refusal without a changelog note; the banner for another open proposal; a new standard's draft kept when leaving.
+
+Selectors are the ids and `data-*` attributes the screens already have (`#capture`, `#cap-editor`, `#item-screen[data-iid]`, `#desc-save`, `#std-submit`, `[data-view]`, `[data-tab]`, …): keep them stable, or update the tests with them.
+
+**In GitLab CI/CD** (`.gitlab-ci.yml`): two parallel jobs on merge requests and branch pushes. `unit` runs on `node:22` (unit tests with a JUnit report, then `npm run build:sync`); `e2e` runs on `mcr.microsoft.com/playwright:v1.65.1-noble`, which already contains the browser, and keeps `test-results/` (traces and screenshots of failures) for a week. Both reports appear in the merge request's test summary. Constraints:
+- The runner needs the Docker executor. Where runners can't reach Docker Hub or `mcr.microsoft.com`, use the company registry's mirror or dependency proxy (e.g. `image: $CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX/node:22`).
+- The Playwright image tag must equal the `@playwright/test` version, which is therefore pinned exactly in `package.json`; upgrade both together.
+- `npm ci` needs the npm registry (or the company's npm mirror via `.npmrc`).
+
+Not covered yet: a real GitLab instance; Firefox and Safari; narrow windows and dark mode.
 
 ---
 
@@ -773,7 +796,7 @@ Not covered yet: React components (no DOM tests) and a real GitLab instance. The
 | L10 | The PAT lives in localStorage | Acceptable for a personal tool. OAuth (PKCE) would be better for wider use |
 | L11 | ~~`GitLab.projectMembers` is unused~~ | Used since v0.4 by `@` completions. The Owner field and attendee chips still use the `#users` datalist (users seen in loaded items) |
 | L12 | The "overdue" stat tile has no click target | Could filter Focus to overdue only |
-| L13 | No DOM or e2e tests; never exercised against a real GitLab instance | First real run may surface CORS or permission issues (e.g. `links` API, label creation needs Maintainer) |
+| L13 | Never exercised against a real GitLab instance (browser tests exist since v0.4.1, against the fake) | First real run may surface CORS or permission issues (e.g. `links` API, label creation needs Maintainer) |
 | L14 | `tsconfig` includes tests; `vite.config.ts` casts `test` with `as any` | Could switch to `vitest/config` `defineConfig` |
 | L15 | Decision supersession isn't modelled | "We changed our mind" is just a new decision |
 | L16 | Series are matched by title only | Renaming a recurring meeting starts a new series. A `fu:series=<key>` marker would make this explicit |
@@ -817,7 +840,7 @@ Each entry: **goal**, then a sketch of the approach. Effort: S = hours, M = a da
 15. **History & search (M).** A paged search across all closed items, using GitLab `search` or `issues?search=` (L1).
 16. **OAuth PKCE login (M)** as an alternative to the PAT (L10).
 17. **Integration into GitLab Everything (M).** The `lib/` folder is framework-free, so it can be published as an internal package or copied as a module in Marco's existing GitLab portal.
-18. **E2E tests (S).** Playwright against `npm run preview` in demo mode, covering capture → meeting → quick look → full screen (description conflict, comment with options) → nudge, and the standard editor → merge request flows (L13). `window.__archDemo` (demo mode only) exposes the fake's database so a test can change "GitLab" behind the app.
+18. ~~**E2E tests**~~: done in v0.4.1 (§10). Possible follow-ups: Prepare, Waiting and the adoption-cycle form; Firefox/WebKit projects; a narrow-window and dark-mode pass with screenshots.
 20. **Uploads in the editors (S).** Paste or drop images and files, as in GitLab Everything (L22).
 21. **Lazy-load the editor (S).** `import()` the editor chunk on first use of a full-screen screen (L21).
 19. **Import from calendar (L).** Pre-fill meeting title, date and attendees from an Outlook/ICS export or a connector.
@@ -847,6 +870,7 @@ Each entry: **goal**, then a sketch of the approach. Effort: S = hours, M = a da
 
 | Version | Date | Changes |
 |---|---|---|
+| v0.4.1 | 2026-11-27 | Browser tests with Playwright in demo mode (`npm run test:e2e`, `e2e/`): meeting notes, quick look and item full screen, standard editor; fixed date and timezone, page-error guard. GitLab CI/CD pipeline (`.gitlab-ci.yml`) running unit tests, the CI sync build and the browser tests. `@playwright/test` pinned to the version of the CI image. |
 | v0.4 | 2026-11-26 | Full-screen editing everywhere, built on GitLab Everything's CodeMirror editor (ported into `src/editor/`): meeting notes (toolbar with Arch lines, attendee chips, card preview, Items/Outline/Checks/Keys panel, Changes against the agenda), item page `#/item/<iid>` (description editor with conflict-safe save and drafts, comment composer with push/close options, rail with follow-up, links and history), standard editor (Change/Details/Outline/Checks panel, merge request preview, whole-file diff, other-proposal banner). The drawer became a read-only quick look (task ticks save at once; ↑/↓, Enter, E, C). `@` completions use project members; Markdown is rendered and sanitised with DOMPurify. Fake GitLab writes system notes; demo database v3 with comments. New storage keys `arch.drafts.v1`, `arch.editor-prefs.v1`. |
 | v0.3 | 2026-11-26 | **Breaking for standards** (never used against a real GitLab): issue-based standards (`fu::standard`, `fu-std::*`, adoption checklists) replaced by documents in the standards repo (front matter, major.minor versions, changelog, categories), proposed in merge requests, mirrored to a project or group wiki with an index page, with optional per-team adoption cycles as `fu::adoption` issues. Standards screen (catalog, detail, editor, cycle form). `STANDARD:` lines create "Write standard" actions; `ADOPTED #id` closes adoption issues. Settings for wiki, categories, team leads and adoption deadline. Optional CI wiki sync (`npm run build:sync`). Demo database v2. |
 | v0.2 | 2026-11-19 | Prepare screen (series, attendees, crews, agenda copy/post, start notes from the agenda). Update syntax for existing items in notes and Quick add. `### Updated` in meeting outcomes. Entry points from Meetings, the meeting drawer and Waiting on others. `p` shortcut. |

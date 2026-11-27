@@ -1,0 +1,47 @@
+# GitLab CI/CD for Arch: unit tests, the CI wiki-sync build and the browser tests,
+# on merge requests and on every branch push (one pipeline per push, not two).
+#
+# Needs a runner with the Docker executor. If your runners can't pull from Docker Hub or
+# mcr.microsoft.com, point the two images at your registry's mirror (see docs/SPEC.md §10).
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+stages: [test]
+
+default:
+  image: node:22
+  cache:
+    key:
+      files: [package-lock.json]
+    paths: [.npm/]
+  before_script:
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
+
+unit:
+  stage: test
+  script:
+    - npm test -- --reporter=default --reporter=junit --outputFile.junit=test-results/unit-junit.xml
+    - npm run build:sync
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: test-results/unit-junit.xml
+
+e2e:
+  stage: test
+  # Comes with Chromium installed. Keep the tag equal to the @playwright/test version in package.json.
+  image: mcr.microsoft.com/playwright:v1.65.1-noble
+  script:
+    - npm run test:e2e
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths: [test-results/]
+    reports:
+      junit: test-results/e2e-junit.xml

@@ -155,4 +155,6 @@ src/components/      React views (no UI library)
 
 ## Contributing / AI agents
 
+Tests: `npm test` (unit tests) and `npm run test:e2e` (browser tests with Playwright in demo mode; run `npx playwright install chromium` once). GitLab CI/CD (`.gitlab-ci.yml`) runs both on every push and merge request.
+
 The full product and technical specification is in [`docs/SPEC.md`](docs/SPEC.md). It covers the GitLab data contract, architecture, invariants, known limitations and a prioritized enhancement backlog. Agents should start with [`AGENTS.md`](AGENTS.md).
