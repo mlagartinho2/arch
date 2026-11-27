@@ -63,7 +63,8 @@ export function Prepare({ preset }: { preset?: PrepPreset }) {
       toast('The capture screen has unsaved notes. Click again to replace them.', 'err');
       return;
     }
-    saveCaptureDraft({ title: opts.title, date, attendees: opts.attendeeNames.join(', '), notes: agendaNotes(prep, opts) });
+    const notes = agendaNotes(prep, opts);
+    saveCaptureDraft({ title: opts.title, date, attendees: opts.attendeeNames.join(', '), notes, base: notes });
     go('capture');
   };
 
@@ -135,7 +136,7 @@ export function Prepare({ preset }: { preset?: PrepPreset }) {
         </label>
         {svc.settings.crews.length > 0 && (
           <label>
-            Crews in the room <span className="muted">(adds their pending standards)</span>
+            Teams in the room <span className="muted">(adds their open adoption issues)</span>
             <div className="crew-picks">
               {svc.settings.crews.map((c) => (
                 <label key={c.name} className="crew-row">
@@ -214,19 +215,18 @@ export function Prepare({ preset }: { preset?: PrepPreset }) {
 
 function PrepRow({ item, on, onToggle }: { item: Item; on: boolean; onToggle: () => void }) {
   const { openItem, today } = useApp();
-  const pending = item.std?.adoption.filter((a) => !a.done).map((a) => a.name) ?? [];
   return (
     <div className={`row ${on ? '' : 'row-off'}`}>
       <input type="checkbox" checked={on} onChange={onToggle} aria-label="Include on agenda" />
-      {item.kind !== 'action' && <KindTag kind={item.kind} />}
+      {item.kind !== 'action' && item.kind !== 'adoption' && <KindTag kind={item.kind} />}
       <div className="row-main" onClick={() => openItem(item)} role="button" tabIndex={0}>
         <div className="row-title">{item.title}</div>
         <div className="row-meta">
           <span className="ref">#{item.iid}</span>
-          {item.std && <span className="muted">{pending.length ? `pending: ${pending.join(', ')}` : 'all crews adopted'}</span>}
+          {item.adoption && <span className="muted">{item.adoption.team} · v{item.adoption.version}</span>}
         </div>
       </div>
-      {item.kind === 'action' && (
+      {(item.kind === 'action' || item.kind === 'adoption') && (
         <>
           <Due item={item} today={today} />
           <Avatar user={item.assignee ?? item.author} />

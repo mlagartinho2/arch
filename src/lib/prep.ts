@@ -132,11 +132,11 @@ export function buildPrep(items: Item[], input: PrepInput): Prep {
   const standards = items
     .filter(
       (i) =>
-        i.kind === 'standard' &&
+        i.kind === 'adoption' &&
         i.open &&
         ((i.meetingIid !== undefined && sessionIids.has(i.meetingIid)) ||
           (i.assignee && people.has(i.assignee.username)) ||
-          (i.std?.status === 'published' && (i.std.adoption ?? []).some((a) => !a.done && input.crews.includes(a.name)))),
+          (i.adoption !== undefined && input.crews.includes(i.adoption.team))),
     )
     .sort(byDue);
   const decisions = lastSession
@@ -150,7 +150,7 @@ export function buildPrep(items: Item[], input: PrepInput): Prep {
       { id: 'carry', title: 'Open from previous sessions', hint: 'Actions created in earlier sessions of this meeting', items: carry },
       { id: 'theyOwe', title: 'Waiting on attendees', hint: 'Open actions assigned to people in the room', items: theyOwe },
       { id: 'mine', title: 'On my side', hint: 'Your open actions that involve these people', items: mine },
-      { id: 'standards', title: 'Standards', hint: 'From this meeting, owned by attendees, or published and still pending for the selected crews', items: standards },
+      { id: 'standards', title: 'Standard adoption', hint: 'Open adoption issues of the teams in the room or of attendees', items: standards },
       {
         id: 'decisions',
         title: lastSession ? `Decisions from ${meetingDate(lastSession)}` : 'Decisions from last session',
@@ -172,13 +172,7 @@ export interface AgendaOptions {
   excluded: Set<number>;
 }
 
-function pending(i: Item) {
-  const p = (i.std?.adoption ?? []).filter((a) => !a.done).map((a) => a.name);
-  return p.length ? `pending: ${p.join(', ')}` : 'all crews adopted';
-}
-
 function meta(i: Item, today: string, mention: boolean) {
-  if (i.kind === 'standard') return pending(i);
   if (i.kind === 'decision') return '';
   const who = i.assignee ? (mention ? `@${i.assignee.username}` : i.assignee.username) : '';
   return [who, i.due ? humanDue(i.due, today) : ''].filter(Boolean).join(', ');
@@ -202,7 +196,7 @@ export function agendaMarkdown(prep: Prep, o: AgendaOptions): string {
     out.push('', `### ${s.title}`);
     for (const i of its) {
       const m = meta(i, o.today, true);
-      const box = i.kind === 'action' ? '- [ ] ' : '- ';
+      const box = i.kind === 'action' || i.kind === 'adoption' ? '- [ ] ' : '- ';
       out.push(`${box}${o.projectPath}#${i.iid} ${i.title}${m ? ` — ${m}` : ''}`);
     }
   }
@@ -220,7 +214,7 @@ export function agendaNotes(prep: Prep, o: AgendaOptions): string {
     out.push('', `### ${s.title}`);
     for (const i of its) {
       const m = meta(i, o.today, false);
-      const box = i.kind === 'action' ? '- [ ] ' : '- ';
+      const box = i.kind === 'action' || i.kind === 'adoption' ? '- [ ] ' : '- ';
       out.push(`${box}#${i.iid} ${i.title}${m ? ` (${m})` : ''}`);
     }
   }

@@ -4,7 +4,7 @@ import { addDays, humanDue } from '../lib/dates';
 import { useApp } from './ctx';
 import { seriesName } from '../lib/prep';
 import { ItemList } from './ItemRow';
-import { Avatar, Empty, Progress, STD_LABEL_TEXT, STD_STEPS, Section, copyText } from './ui';
+import { Avatar, Empty, Section, copyText } from './ui';
 
 function useTrackable() {
   const { items } = useApp();
@@ -19,7 +19,7 @@ export function FocusView() {
   const soon = open.filter((i) => i.due && i.due > today && isDueSoon(i, today, 7));
   const undated = open.filter((i) => !i.due);
   const decisions30 = items.filter((i) => i.kind === 'decision' && i.createdAt.slice(0, 10) >= addDays(today, -30)).length;
-  const adopting = items.filter((i) => i.kind === 'standard' && i.open).length;
+  const adopting = items.filter((i) => i.kind === 'adoption' && i.open).length;
 
   return (
     <>
@@ -38,7 +38,7 @@ export function FocusView() {
         </button>
         <button className="stat" onClick={() => go('standards')}>
           <b>{adopting}</b>
-          <span>standards in flight</span>
+          <span>adoptions open</span>
         </button>
         <button className="stat" onClick={() => go('decisions')}>
           <b>{decisions30}</b>
@@ -160,51 +160,6 @@ export function DecisionsView() {
   );
 }
 
-export function StandardsView() {
-  const { items, openItem, today } = useApp();
-  const stds = items.filter((i) => i.kind === 'standard');
-  if (!stds.length) return <Empty>No standards yet. Write <code>STANDARD: …</code> in meeting notes to start one.</Empty>;
-  return (
-    <div className="board">
-      {STD_STEPS.map((s) => {
-        const col = stds.filter((i) => i.std!.status === s).sort(byDue);
-        return (
-          <div className="col" key={s}>
-            <h4>
-              {STD_LABEL_TEXT[s]} <span className="count">{col.length}</span>
-            </h4>
-            {col.map((i) => {
-              const done = i.std!.adoption.filter((a) => a.done).length;
-              return (
-                <div className="card" key={i.iid} onClick={() => openItem(i)}>
-                  <div className="card-title">{i.title}</div>
-                  <div className="card-meta">
-                    <span className="ref">#{i.iid}</span>
-                    {i.due && s !== 'adopted' && <span className={i.due < today ? 'due due-over' : 'due'}>{humanDue(i.due, today)}</span>}
-                  </div>
-                  {i.std!.adoption.length > 0 && (s === 'published' || s === 'adopted') && (
-                    <>
-                      <Progress done={done} total={i.std!.adoption.length} />
-                      <div className="crews">
-                        {i.std!.adoption.map((a) => (
-                          <span key={a.name} className={a.done ? 'crew done' : 'crew'}>
-                            {a.done ? '✓ ' : ''}
-                            {a.name}
-                          </span>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export function MeetingsView() {
   const { items, openItem, prepare } = useApp();
   const meetings = items.filter((i) => i.kind === 'meeting').sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -221,7 +176,7 @@ export function MeetingsView() {
               <div className="row-meta">
                 <span className="ref">#{m.iid}</span>
                 <span className="muted">
-                  {(['decision', 'action', 'standard'] as const)
+                  {(['decision', 'action'] as const)
                     .map((k) => [k, out.filter((i) => i.kind === k).length] as const)
                     .filter(([, n]) => n > 0)
                     .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`)
