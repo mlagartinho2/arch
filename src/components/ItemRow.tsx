@@ -1,12 +1,11 @@
 import type { Item } from '../lib/model';
 import { addDays } from '../lib/dates';
 import { useApp } from './ctx';
-import { Avatar, Due, KindTag, Progress, STD_LABEL_TEXT } from './ui';
+import { Avatar, Due, KindTag } from './ui';
 
-export function ItemRow({ item, showKind = true, showMeeting = true }: { item: Item; showKind?: boolean; showMeeting?: boolean }) {
-  const { openItem, today, me, svc, upsert, run } = useApp();
+export function ItemRow({ item, showKind = true, showMeeting = true, siblings }: { item: Item; showKind?: boolean; showMeeting?: boolean; siblings?: number[] }) {
+  const { openItem, openFull, selected, today, me, svc, upsert, run } = useApp();
   const waiting = item.assignee && item.assignee.username !== me;
-  const doneStd = item.std?.adoption.filter((a) => a.done).length ?? 0;
 
   const quick = (e: React.MouseEvent, fn: () => Promise<Item | null | undefined>, label: string) => {
     e.stopPropagation();
@@ -14,28 +13,43 @@ export function ItemRow({ item, showKind = true, showMeeting = true }: { item: I
   };
 
   return (
-    <div className={`row ${item.open || item.kind === 'decision' ? '' : 'row-closed'}`} onClick={() => openItem(item)} role="button" tabIndex={0}>
-      {item.kind === 'action' && (
+    <div
+      className={`row ${item.open || item.kind === 'decision' ? '' : 'row-closed'}${selected === item.iid ? ' row-sel' : ''}`}
+      onClick={() => openItem(item, siblings)}
+      onDoubleClick={() => openFull(item.iid)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === ' ') { e.preventDefault(); openItem(item, siblings); }
+        if (e.key === 'Enter') { e.preventDefault(); openFull(item.iid); }
+      }}
+      role="button"
+      tabIndex={0}
+      data-iid={item.iid}
+    >
+      {(item.kind === 'action' || item.kind === 'adoption') && (
         <button
           className={`check ${item.open ? '' : 'checked'}`}
-          title={item.open ? 'Mark done' : 'Reopen'}
-          onClick={(e) => quick(e, () => (item.open ? svc.close(item) : svc.reopen(item)), item.open ? 'Done' : 'Reopened')}
+          title={item.open ? (item.kind === 'adoption' ? 'Mark adopted' : 'Mark done') : 'Reopen'}
+          onClick={(e) =>
+            quick(e, () => (item.open ? svc.close(item) : svc.reopen(item)), item.open ? (item.kind === 'adoption' ? 'Adopted' : 'Done') : 'Reopened')
+          }
         >
           {item.open ? '' : '✓'}
         </button>
       )}
-      {showKind && item.kind !== 'action' && <KindTag kind={item.kind} />}
+      {showKind && item.kind !== 'action' && item.kind !== 'adoption' && <KindTag kind={item.kind} />}
       <div className="row-main">
         <div className="row-title">{item.title}</div>
         <div className="row-meta">
           <span className="ref">#{item.iid}</span>
           {showMeeting && item.meetingIid && <span className="muted">from meeting #{item.meetingIid}</span>}
           {item.notesCount > 0 && <span className="muted">💬 {item.notesCount}</span>}
-          {item.std && <span className={`std-pill std-${item.std.status}`}>{STD_LABEL_TEXT[item.std.status]}</span>}
+          {item.kind === 'adoption' && <span className="kind kind-adoption">Adoption · {item.adoption?.team ?? '?'}</span>}
+          {item.adoption?.outcome && <span className="muted">{item.adoption.outcome}</span>}
+          {item.newStandard && <span className="kind kind-standard">Standard to write</span>}
         </div>
       </div>
-      {item.std && item.std.adoption.length > 0 && <Progress done={doneStd} total={item.std.adoption.length} />}
-      {(item.kind === 'action' || item.kind === 'standard') && (
+      {(item.kind === 'action' || item.kind === 'adoption') && (
         <>
           {item.open && (
             <span className="row-actions">
@@ -60,10 +74,11 @@ export function ItemRow({ item, showKind = true, showMeeting = true }: { item: I
 
 export function ItemList({ items, empty, ...rest }: { items: Item[]; empty?: string; showKind?: boolean; showMeeting?: boolean }) {
   if (!items.length) return <div className="empty small">{empty ?? 'Nothing here.'}</div>;
+  const siblings = items.map((i) => i.iid);
   return (
     <div className="list">
       {items.map((i) => (
-        <ItemRow key={i.iid} item={i} {...rest} />
+        <ItemRow key={i.iid} item={i} siblings={siblings} {...rest} />
       ))}
     </div>
   );

@@ -1,20 +1,10 @@
+import { joinMarkers, splitMarkers, toggleTask } from './markers';
 import { GitLab, type GlProject, type GlUser } from './gitlab';
 import { updateNote, type Draft, type UpdateDraft } from './parser';
 import type { Settings } from './settings';
-import {
-  LABELS,
-  LABEL_DEFS,
-  STD_LABEL,
-  addAdoptionCrew,
-  setAdoption,
-  setDocumentSection,
-  setMarker,
-  standardDescription,
-  toItem,
-  type Item,
-  type StdStatus,
-} from './model';
+import { LABELS, LABEL_DEFS, setMarker, toItem, type Item } from './model';
 import { addDays, todayIso } from './dates';
+import { StandardsService } from './standardsService';
 
 export interface MeetingInput {
   title: string;
@@ -28,7 +18,12 @@ export class Service {
   project!: GlProject;
   missingLabels: string[] = [];
 
-  constructor(public gl: GitLab, public settings: Settings) {}
+  /** Standards: documents, wiki mirror and adoption cycles */
+  std: StandardsService;
+
+  constructor(public gl: GitLab, public settings: Settings) {
+    this.std = new StandardsService(gl, settings, () => this.me, () => this.project.id);
+  }
 
   async init() {
     const [me, project] = await Promise.all([this.gl.currentUser(), this.gl.project(this.settings.followupsProject)]);
@@ -79,9 +74,12 @@ export class Service {
     let assignee_ids: number[] | undefined;
     let due_date: string | null = d.due ?? null;
 
+    let title = d.title;
     if (d.type === 'standard') {
-      labels = [LABELS.standard, LABELS.stdDraft].join(',');
-      description = standardDescription({ summary: d.details, crews: this.settings.crews, meetingIid });
+      // A standard to write: an action whose owner drafts it (Standards → New standard, pre-filled from this item).
+      labels = LABELS.action;
+      title = `Write standard: ${d.title}`;
+      description = setMarker(`${from}${d.details || ''}`.trim(), 'newstandard', encodeURIComponent(d.title));
       assignee_ids = await this.assigneeIds(d.assignee);
     } else if (d.type === 'decision') {
       labels = LABELS.decision;
@@ -92,9 +90,9 @@ export class Service {
       description = `${from}${d.details || ''}`.trim();
       assignee_ids = await this.assigneeIds(d.assignee);
     }
-    if (meetingIid && d.type !== 'standard') description = setMarker(description, 'meeting', String(meetingIid));
+    if (meetingIid) description = setMarker(description, 'meeting', String(meetingIid));
 
-    let issue = await this.gl.createIssue(pid, { title: d.title, description, labels, assignee_ids, due_date });
+    let issue = await this.gl.createIssue(pid, { title, description, labels, assignee_ids, due_date });
     if (d.type === 'decision') issue = await this.gl.updateIssue(pid, issue.iid, { state_event: 'close' });
     if (meetingIid) {
       await this.gl.linkIssues(pid, meetingIid, pid, issue.iid).catch(() => undefined);
@@ -121,13 +119,13 @@ export class Service {
 
     switch (u.op) {
       case 'done':
-        if (item.kind === 'standard') throw new Error(`#${u.iid} is a standard: use ADOPTED #${u.iid} <crew>`);
         body.state_event = 'close';
         comment = withNote(`✅ Done${where}`);
         summary = 'done';
         break;
       case 'drop':
         body.state_event = 'close';
+        if (item.kind === 'adoption') body.description = setMarker(item.description, 'outcome', 'dropped');
         comment = withNote(`🚫 Dropped${where}`);
         summary = 'dropped';
         break;
@@ -142,19 +140,12 @@ export class Service {
         comment = note ? `📝 Update${where}: ${note}` : undefined;
         summary = u.due ? `updated, follow-up → ${u.due}` : 'updated';
         break;
-      case 'adopted': {
-        if (item.kind !== 'standard') throw new Error(`#${u.iid} is not a standard`);
-        const names = note.split(/,|;|\s+and\s+|\s+&\s+/i).map((c) => c.trim()).filter(Boolean);
-        if (!names.length) throw new Error(`ADOPTED #${u.iid} needs crew names`);
-        const crews = names.map((n) => {
-          const c = item!.std!.adoption.find((a) => a.name.toLowerCase() === n.toLowerCase());
-          if (!c) throw new Error(`#${u.iid} has no crew "${n}"`);
-          return c.name;
-        });
-        for (const c of crews) item = await this.toggleAdoption(item!, c, true);
-        summary = `adopted by ${crews.join(', ')}`;
+      case 'adopted':
+        if (item.kind !== 'adoption') throw new Error(`#${u.iid} is not an adoption issue: use DONE #${u.iid}`);
+        body.state_event = 'close';
+        comment = withNote(`✅ Adopted${where}`);
+        summary = 'adopted';
         break;
-      }
     }
     if (u.assignee) summary += ` · → @${u.assignee}`;
     if (Object.keys(body).length) item = toItem(await this.gl.updateIssue(pid, u.iid, body));
@@ -201,7 +192,6 @@ export class Service {
       '## Outcomes',
       ...outcome('decision', 'Decisions'),
       ...outcome('action', 'Actions'),
-      ...outcome('standard', 'Standards'),
       ...(updated.length ? ['### Updated', ...updated.map((u) => `- #${u.iid} ${u.title} — ${u.summary}`), ''] : []),
     ].join('\n');
     await this.gl.updateIssue(pid, meeting.iid, {
@@ -237,6 +227,29 @@ export class Service {
     return this.gl.updateIssue(it.projectId, it.iid, { title }).then(toItem);
   }
 
+  /** Re-reads an item from GitLab. */
+  async fetch(it: Pick<Item, 'projectId' | 'iid'>) {
+    return toItem(await this.gl.issue(it.projectId, it.iid));
+  }
+
+  /** The description as stored in GitLab right now (to detect edits made since the editor opened). */
+  async remoteDescription(it: Item) {
+    return String((await this.gl.issue(it.projectId, it.iid)).description ?? '').replace(/\r\n?/g, '\n');
+  }
+
+  setDescription(it: Item, description: string) {
+    return this.gl.updateIssue(it.projectId, it.iid, { description }).then(toItem);
+  }
+
+  /** Ticks or unticks a task in the description, applied to the latest version in GitLab. */
+  async tickTask(it: Item, line: number, expected: string, checked: boolean) {
+    const fresh = await this.gl.issue(it.projectId, it.iid);
+    const { text, markers } = splitMarkers(fresh.description ?? '');
+    const next = toggleTask(text, line, expected, checked);
+    if (next === null) throw new Error('That task was changed in GitLab meanwhile. Reload the item and try again.');
+    return toItem(await this.gl.updateIssue(it.projectId, it.iid, { description: joinMarkers(next, markers) }));
+  }
+
   addNote(it: Item, body: string) {
     return this.gl.addNote(it.projectId, it.iid, body);
   }
@@ -250,81 +263,5 @@ export class Service {
     const who = it.assignee ? `@${it.assignee.username} ` : '';
     await this.gl.addNote(it.projectId, it.iid, `${who}${message}`.trim());
     return this.setDue(it, addDays(todayIso(), pushDays));
-  }
-
-  // ---------- standards ----------
-
-  async setStdStatus(it: Item, status: StdStatus, extra: Record<string, unknown> = {}) {
-    const remove = Object.values(STD_LABEL).filter((l) => l !== STD_LABEL[status]);
-    return toItem(
-      await this.gl.updateIssue(it.projectId, it.iid, {
-        add_labels: STD_LABEL[status],
-        remove_labels: remove.join(','),
-        ...extra,
-      }),
-    )!;
-  }
-
-  async toggleAdoption(it: Item, crew: string, done: boolean): Promise<Item> {
-    let updated = toItem(
-      await this.gl.updateIssue(it.projectId, it.iid, { description: setAdoption(it.description, crew, done) }),
-    )!;
-    await this.gl.addNote(it.projectId, it.iid, `${done ? '✅' : '↩️'} ${crew} ${done ? 'adopted' : 'not adopted yet'}`);
-    const all = updated.std!.adoption;
-    if (all.length && all.every((a) => a.done) && updated.std!.status !== 'adopted') {
-      updated = await this.setStdStatus(updated, 'adopted', { state_event: 'close' });
-    } else if (!all.every((a) => a.done) && updated.std!.status === 'adopted') {
-      updated = await this.setStdStatus(updated, 'published', { state_event: 'reopen' });
-    }
-    return updated;
-  }
-
-  async addCrew(it: Item, crew: string, handle?: string) {
-    return toItem(
-      await this.gl.updateIssue(it.projectId, it.iid, { description: addAdoptionCrew(it.description, crew, handle) }),
-    )!;
-  }
-
-  /** Commit the standard document on a new branch and open a merge request in the standards repo. */
-  async publishStandard(it: Item, path: string, content: string) {
-    const sp = await this.gl.project(this.settings.standardsProject);
-    const branch = `standard/${path.split('/').pop()!.replace(/\.md$/, '')}-${Date.now().toString(36)}`;
-    await this.gl.commit(sp.id, {
-      branch,
-      start_branch: sp.default_branch,
-      commit_message: `Add standard: ${it.title}`,
-      actions: [{ action: 'create', file_path: path, content }],
-    });
-    const mr = await this.gl.createMergeRequest(sp.id, {
-      source_branch: branch,
-      target_branch: sp.default_branch,
-      title: `Standard: ${it.title}`,
-      description: `Tracks ${this.project.path_with_namespace}#${it.iid}`,
-      remove_source_branch: true,
-    });
-    const docUrl = `${sp.web_url}/-/blob/${sp.default_branch}/${path}`;
-    let desc = setDocumentSection(it.description, `[${path}](${docUrl}) — review in ${mr.web_url}`);
-    desc = setMarker(desc, 'mr', `${sp.id}:${mr.iid}`);
-    desc = setMarker(desc, 'path', path);
-    await this.gl.addNote(it.projectId, it.iid, `Opened merge request ${mr.web_url}`);
-    return { item: await this.setStdStatus(it, 'review', { description: desc }), mr };
-  }
-
-  /** If the standard's MR got merged, move it to "published". */
-  async syncStandard(it: Item): Promise<{ item: Item; mrState?: string; mrUrl?: string }> {
-    if (!it.std?.mr) return { item: it };
-    const mr = await this.gl.mergeRequest(it.std.mr.projectId, it.std.mr.iid);
-    if (mr.state === 'merged' && it.std.status === 'review') {
-      return { item: await this.setStdStatus(it, 'published'), mrState: mr.state, mrUrl: mr.web_url };
-    }
-    return { item: it, mrState: mr.state, mrUrl: mr.web_url };
-  }
-
-  /** Post a comment mentioning every crew that hasn't adopted yet. */
-  async notifyCrews(it: Item, message: string) {
-    const pending = (it.std?.adoption ?? []).filter((a) => !a.done).map((a) => a.name);
-    const handles = this.settings.crews.filter((c) => pending.includes(c.name) && c.handle).map((c) => c.handle);
-    await this.gl.addNote(it.projectId, it.iid, `${handles.join(' ')}\n\n${message}`.trim());
-    return handles.length;
   }
 }

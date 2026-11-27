@@ -47,7 +47,45 @@ export interface GlMergeRequest {
   state: 'opened' | 'closed' | 'merged' | 'locked';
   web_url: string;
   title: string;
+  source_branch?: string;
+  description?: string | null;
+  created_at?: string;
+  author?: GlUser;
 }
+
+export interface GlTreeEntry {
+  id: string;
+  name: string;
+  type: 'tree' | 'blob';
+  path: string;
+}
+
+export interface GlCommit {
+  id: string;
+  short_id: string;
+  title: string;
+  author_name: string;
+  created_at: string;
+  web_url?: string;
+}
+
+export interface GlWikiPage {
+  slug: string;
+  title: string;
+  format: string;
+  content?: string;
+}
+
+/** Where standards are mirrored: a project's wiki (all tiers) or a group's wiki (Premium and Ultimate). */
+export interface WikiTarget {
+  kind: 'project' | 'group';
+  path: string;
+}
+
+export type CommitAction =
+  | { action: 'create' | 'update'; file_path: string; content: string }
+  | { action: 'move'; file_path: string; previous_path: string; content?: string }
+  | { action: 'delete'; file_path: string };
 
 export class GitLabError extends Error {
   constructor(public status: number, message: string) {
@@ -66,7 +104,7 @@ export class GitLab {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
-  private async req<T>(method: string, path: string, body?: unknown): Promise<{ data: T; headers: Headers }> {
+  private async req<T>(method: string, path: string, body?: unknown, raw = false): Promise<{ data: T; headers: Headers }> {
     const res = await this.fetchFn(`${this.baseUrl}/api/v4${path}`, {
       method,
       headers: {
@@ -86,6 +124,7 @@ export class GitLab {
       throw new GitLabError(res.status, `${method} ${path}: ${res.status} ${msg}`);
     }
     const text = await res.text();
+    if (raw) return { data: text as T, headers: res.headers };
     return { data: (text ? JSON.parse(text) : null) as T, headers: res.headers };
   }
 
@@ -188,7 +227,7 @@ export class GitLab {
       branch: string;
       start_branch?: string;
       commit_message: string;
-      actions: { action: 'create' | 'update'; file_path: string; content: string }[];
+      actions: CommitAction[];
     },
   ) {
     return this.req('POST', `/projects/${GitLab.pid(project)}/repository/commits`, body).then((r) => r.data);
@@ -205,5 +244,69 @@ export class GitLab {
 
   mergeRequest(project: string | number, iid: number) {
     return this.get<GlMergeRequest>(`/projects/${GitLab.pid(project)}/merge_requests/${iid}`);
+  }
+
+  /** All open (or other `state`) merge requests of a project. */
+  mergeRequests(project: string | number, state: 'opened' | 'merged' | 'all' = 'opened') {
+    return this.getAll<GlMergeRequest>(`/projects/${GitLab.pid(project)}/merge_requests?state=${state}`);
+  }
+
+  // ---------- repository files ----------
+
+  tree(project: string | number, path: string, ref?: string) {
+    const q = new URLSearchParams({ path, recursive: 'true', ...(ref ? { ref } : {}) }).toString();
+    return this.getAll<GlTreeEntry>(`/projects/${GitLab.pid(project)}/repository/tree?${q}`);
+  }
+
+  rawFile(project: string | number, path: string, ref: string) {
+    return this.req<string>(
+      'GET',
+      `/projects/${GitLab.pid(project)}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(ref)}`,
+      undefined,
+      true,
+    ).then((r) => r.data);
+  }
+
+  /** Commits that touched a file, newest first. */
+  fileCommits(project: string | number, path: string, ref: string) {
+    const q = new URLSearchParams({ path, ref_name: ref, per_page: '50' }).toString();
+    return this.get<GlCommit[]>(`/projects/${GitLab.pid(project)}/repository/commits?${q}`);
+  }
+
+  // ---------- wikis (project or group) ----------
+
+  private wikiBase(t: WikiTarget) {
+    return `/${t.kind === 'group' ? 'groups' : 'projects'}/${encodeURIComponent(t.path)}/wikis`;
+  }
+
+  wikiPages(t: WikiTarget) {
+    return this.get<GlWikiPage[]>(`${this.wikiBase(t)}?with_content=1`);
+  }
+
+  wikiPage(t: WikiTarget, slug: string) {
+    return this.get<GlWikiPage>(`${this.wikiBase(t)}/${encodeURIComponent(slug)}`);
+  }
+
+  createWikiPage(t: WikiTarget, page: { title: string; content: string }) {
+    return this.req<GlWikiPage>('POST', this.wikiBase(t), { ...page, format: 'markdown' }).then((r) => r.data);
+  }
+
+  updateWikiPage(t: WikiTarget, slug: string, page: { title: string; content: string }) {
+    return this.req<GlWikiPage>('PUT', `${this.wikiBase(t)}/${encodeURIComponent(slug)}`, { ...page, format: 'markdown' }).then(
+      (r) => r.data,
+    );
+  }
+
+  deleteWikiPage(t: WikiTarget, slug: string) {
+    return this.req('DELETE', `${this.wikiBase(t)}/${encodeURIComponent(slug)}`).then(() => undefined);
+  }
+
+  /** Web URL of a wiki page. */
+  wikiUrl(t: WikiTarget, slug: string) {
+    return `${this.baseUrl}/${t.kind === 'group' ? 'groups/' : ''}${t.path}/-/wikis/${slug}`;
+  }
+
+  webUrl(path: string) {
+    return `${this.baseUrl}/${path.replace(/^\/+/, '')}`;
   }
 }

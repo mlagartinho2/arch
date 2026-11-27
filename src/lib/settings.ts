@@ -1,8 +1,26 @@
+/** A team (crew) that may have to adopt standards. */
 export interface Crew {
   name: string;
-  /** Optional GitLab handle to mention when notifying the crew, e.g. "@platform/crew-payments" or "@jdoe" */
+  /** Optional GitLab handle of the team, e.g. "@platform/crew-payments", shown on its adoption issues */
   handle?: string;
+  /** GitLab username of the person usually responsible for adoption in this team (pre-fills adoption cycles) */
+  lead?: string;
 }
+
+/** A category of standards. `key` is the folder name in the repo and the wiki; `label` is what people see. */
+export interface Category {
+  key: string;
+  label: string;
+}
+
+export const DEFAULT_CATEGORIES: Category[] = [
+  { key: 'api', label: 'API' },
+  { key: 'react', label: 'React' },
+  { key: 'devops', label: 'DevOps' },
+  { key: 'security', label: 'Security & vulnerabilities' },
+  { key: 'architecture', label: 'Architecture' },
+  { key: 'data', label: 'Data' },
+];
 
 export interface Settings {
   /** e.g. https://gitlab.mycompany.com */
@@ -11,12 +29,21 @@ export interface Settings {
   token: string;
   /** Project (full path) that holds all follow-up issues, e.g. "architecture/follow-ups" */
   followupsProject: string;
-  /** Project (full path) holding the published standards, e.g. "architecture/standards" */
+  /** Repository (full path) holding the standard documents, e.g. "architecture/standards" */
   standardsProject: string;
-  /** Folder inside the standards repo where new standard documents are written */
+  /** Folder inside the standards repo: documents live at <folder>/<category>/<id>.md */
   standardsFolder: string;
-  /** Crews that must adopt standards */
+  /** Wiki that mirrors the standards: a project's (all tiers) or a group's (Premium and Ultimate). Empty path = the standards project's wiki */
+  wikiKind: 'project' | 'group';
+  wikiPath: string;
+  /** Wiki folder for the mirrored pages; the index page lives at this slug */
+  wikiPrefix: string;
+  /** Categories of standards */
+  categories: Category[];
+  /** Teams (crews) that may have to adopt standards */
   crews: Crew[];
+  /** Default deadline for a new adoption cycle, in days */
+  adoptionDays: number;
   /** Follow-up date given to an action that has no explicit due: date */
   defaultFollowUpDays: number;
   /** Run against an in-memory fake GitLab (no token needed) */
@@ -50,7 +77,12 @@ export const defaultSettings: Settings = {
   followupsProject: '',
   standardsProject: '',
   standardsFolder: 'standards',
+  wikiKind: 'project',
+  wikiPath: '',
+  wikiPrefix: 'standards',
+  categories: DEFAULT_CATEGORIES,
   crews: [],
+  adoptionDays: 30,
   defaultFollowUpDays: 7,
   demo: false,
 };
@@ -62,9 +94,9 @@ export const demoSettings: Settings = {
   followupsProject: 'architecture/follow-ups',
   standardsProject: 'architecture/standards',
   crews: [
-    { name: 'Payments', handle: '@platform/crew-payments' },
-    { name: 'Onboarding', handle: '@platform/crew-onboarding' },
-    { name: 'Data', handle: '@platform/crew-data' },
+    { name: 'Payments', handle: '@platform/crew-payments', lead: 'priya.nair' },
+    { name: 'Onboarding', handle: '@platform/crew-onboarding', lead: 'jonas.weber' },
+    { name: 'Data', handle: '@platform/crew-data', lead: 'sofia.ricci' },
   ],
   demo: true,
 };
@@ -85,6 +117,15 @@ export function saveSettings(s: Settings) {
   } catch {
     /* ignore */
   }
+}
+
+/** The wiki standards are mirrored to; defaults to the standards project's own wiki. */
+export function wikiTarget(s: Settings) {
+  return { kind: s.wikiKind, path: s.wikiPath || s.standardsProject } as const;
+}
+
+export function categoryLabel(s: Settings, key: string) {
+  return s.categories.find((c) => c.key === key)?.label ?? key;
 }
 
 export function isConfigured(s: Settings) {

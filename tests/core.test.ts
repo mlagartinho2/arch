@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveDate } from '../src/lib/dates';
 import { parseLine, parseNotes } from '../src/lib/parser';
-import { addAdoptionCrew, parseAdoption, setAdoption, setDocumentSection, standardDescription, getMarker, setMarker } from '../src/lib/model';
+import { getMarker, setMarker } from '../src/lib/model';
 import { GitLab } from '../src/lib/gitlab';
 import { Service } from '../src/lib/service';
 import { createFakeGitLab, seedDb } from '../src/lib/demo';
@@ -89,22 +89,10 @@ Other notes
   });
 });
 
-describe('standard description helpers', () => {
-  const crews = [{ name: 'Payments', handle: '@g/pay' }, { name: 'Data' }];
-  it('builds, toggles and extends adoption', () => {
-    let d = standardDescription({ summary: 'Use problem+json', crews, meetingIid: 4 });
-    expect(parseAdoption(d)).toEqual([
-      { name: 'Payments', done: false },
-      { name: 'Data', done: false },
-    ]);
-    d = setAdoption(d, 'Payments', true);
-    expect(parseAdoption(d)[0].done).toBe(true);
-    d = addAdoptionCrew(d, 'Onboarding');
-    expect(parseAdoption(d).map((a) => a.name)).toEqual(['Payments', 'Data', 'Onboarding']);
-    expect(getMarker(d, 'meeting')).toBe('4');
-    d = setDocumentSection(d, '[standards/x.md](u)');
-    expect(d).toContain('## Document\n[standards/x.md](u)\n\n## Adoption');
-    d = setMarker(setMarker(d, 'mr', '12:3'), 'mr', '12:4');
+describe('markers', () => {
+  it('replaces instead of duplicating', () => {
+    let d = setMarker('text', 'mr', '12:3');
+    d = setMarker(d, 'mr', '12:4');
     expect(getMarker(d, 'mr')).toBe('12:4');
     expect(d.match(/fu:mr/g)).toHaveLength(1);
   });
@@ -120,7 +108,7 @@ describe('service against fake GitLab', () => {
 
   it('bootstraps labels', async () => {
     const { svc } = await setup(false);
-    expect(svc.missingLabels.length).toBe(8);
+    expect(svc.missingLabels.length).toBe(4);
     await svc.ensureLabels();
     await svc.init();
     expect(svc.missingLabels).toEqual([]);
@@ -135,12 +123,13 @@ describe('service against fake GitLab', () => {
     const drafts = parseNotes(notes, opts);
     const r = await svc.captureMeeting({ title: 'Observability', date: today, attendees: 'Lukas', notes }, drafts);
     expect(r.errors).toEqual([]);
-    expect(r.created.map((c) => c.kind)).toEqual(['decision', 'action', 'action', 'standard']);
+    expect(r.created.map((c) => c.kind)).toEqual(['decision', 'action', 'action', 'action']);
     const decision = r.created[0];
     expect(decision.open).toBe(false);
     expect(r.created[1].assignee?.username).toBe('lukas.brunner');
     expect(r.created[2].assignee?.username).toBe('marco');
-    expect(r.created[3].std?.adoption).toHaveLength(3);
+    // A STANDARD line becomes an action to write the standard, linked to the meeting.
+    expect(r.created[3]).toMatchObject({ title: 'Write standard: Tracing headers', newStandard: true });
     expect(r.created[3].meetingIid).toBe(r.meetingIid);
     const meeting = fake.db.issues.find((i) => i.iid === r.meetingIid)!;
     expect(meeting.state).toBe('closed');
@@ -157,30 +146,11 @@ describe('service against fake GitLab', () => {
     expect(r.errors[0]).toMatch(/@nobody not found/);
   });
 
-  it('runs the standards lifecycle', async () => {
-    const { svc, fake } = await setup();
-    let std = (await svc.loadItems()).find((i) => i.kind === 'standard' && i.std?.status === 'draft')!;
-    const { item } = await svc.publishStandard(std, 'standards/api-error-format.md', '# API error format');
-    expect(item.std?.status).toBe('review');
-    expect(item.std?.mr).toEqual({ projectId: 12, iid: 1 });
-    expect(Object.keys(fake.db.files)[0]).toMatch(/^12:standard\/api-error-format-.*:standards\/api-error-format.md$/);
-    fake.db.mrs[0].state = 'merged';
-    std = (await svc.syncStandard(item)).item;
-    expect(std.std?.status).toBe('published');
-    expect(await svc.notifyCrews(std, 'Please adopt')).toBe(3);
-    for (const c of ['Payments', 'Onboarding', 'Data']) std = await svc.toggleAdoption(std, c, true);
-    expect(std.std?.status).toBe('adopted');
-    expect(std.open).toBe(false);
-    std = await svc.toggleAdoption(std, 'Data', false);
-    expect(std.std?.status).toBe('published');
-    expect(std.open).toBe(true);
-  });
-
   it('nudges the assignee and pushes the follow-up date', async () => {
     const { svc, fake } = await setup();
     const it0 = (await svc.loadItems()).find((i) => i.assignee?.username === 'jonas.weber')!;
     const upd = await svc.nudge(it0, 'any update?', 3);
-    expect(fake.db.notes[`11:${it0.iid}`][0].body).toBe('@jonas.weber any update?');
+    expect(fake.db.notes[`11:${it0.iid}`].filter((n) => !n.system)[0].body).toBe('@jonas.weber any update?');
     expect(upd!.due! > today).toBe(true);
   });
 });

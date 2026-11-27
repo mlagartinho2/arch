@@ -73,15 +73,16 @@ describe('prep', () => {
     });
     const ids = Object.fromEntries(prep.sections.map((s) => [s.id, s.items.map((i) => i.iid)]));
     expect(prep.lastSession?.iid).toBe(1);
-    expect(ids).toEqual({ carry: [7, 6, 8], theyOwe: [12], mine: [10], standards: [13, 14], decisions: [3, 4] });
+    // Adoption issues of attendees (#14 Jonas, #15 Sofia) go under standards, not under waiting.
+    expect(ids).toEqual({ carry: [7, 6, 8], theyOwe: [12], mine: [10], standards: [14, 15], decisions: [3, 4] });
   });
 
-  it('gathers a 1:1 without a series, and pending standards for selected crews', async () => {
+  it('gathers a 1:1 without a series, and adoption issues of the selected teams', async () => {
     const { items } = await load();
     const prep = buildPrep(items, { title: '1:1 Priya', attendees: ['priya.nair'], crews: ['Onboarding'], me: 'marco', users });
     const ids = Object.fromEntries(prep.sections.map((s) => [s.id, s.items.map((i) => i.iid)]));
     expect(prep.series).toBeUndefined();
-    expect(ids).toEqual({ carry: [], theyOwe: [9], mine: [10], standards: [14], decisions: [] });
+    expect(ids).toEqual({ carry: [], theyOwe: [9], mine: [10], standards: [14, 16], decisions: [] });
   });
 
   it('renders the agenda and capture notes', async () => {
@@ -100,7 +101,7 @@ describe('prep', () => {
     expect(md).toContain('## Architecture Board — 2026-11-25\n**Attendees:** Jonas Weber');
     expect(md).toContain('- [ ] architecture/follow-ups#7 Share load-test results of the new gateway — @jonas.weber, 2d overdue');
     expect(md).not.toContain('#8 ');
-    expect(md).toContain('- architecture/follow-ups#14 Kafka topic naming & schema rules — pending: Onboarding');
+    expect(md).toContain('- [ ] architecture/follow-ups#14 Adopt "API error format (RFC 7807)" v1.0 — Onboarding — @jonas.weber, 3d overdue');
     expect(md).toContain('### Other topics\n- Observability budget\n- Kafka retention');
     const notes = agendaNotes(prep, o);
     expect(notes).toContain('- [ ] #7 Share load-test results of the new gateway (jonas.weber, 2d overdue)');
@@ -127,7 +128,7 @@ describe('applying updates', () => {
 UPDATE #8: halfway, 4 services left
 PUSH #6 due:fri
 DROP #12: budget moved to Q1
-ADOPTED #14 Onboarding
+ADOPTED #14: rolled out in all Onboarding services
 ACTION @sofia.ricci: plan the remaining migrations
 DONE #999`;
     const { items, updates } = parseMeeting(text, opts);
@@ -138,7 +139,7 @@ DONE #999`;
       [8, 'updated'],
       [6, 'follow-up → 2026-11-20'],
       [12, 'dropped'],
-      [14, 'adopted by Onboarding'],
+      [14, 'adopted'],
     ]);
     expect(r.errors).toEqual(['#999: GET /projects/11/issues/999: 404 404 Issue Not Found']);
     const m = r.meetingIid;
@@ -148,17 +149,17 @@ DONE #999`;
     expect(issue(fake, 6).due_date).toBe('2026-11-20');
     expect(issue(fake, 12).state).toBe('closed');
     expect(notes(fake, 12)[0]).toBe(`🚫 Dropped in #${m}: budget moved to Q1`);
-    expect(issue(fake, 14).state).toBe('closed'); // last pending crew adopted
-    expect(issue(fake, 14).labels).toContain('fu-std::adopted');
+    expect(issue(fake, 14).state).toBe('closed');
+    expect(notes(fake, 14)[0]).toBe(`✅ Adopted in #${m}: rolled out in all Onboarding services`);
+    // DROP on an adoption issue records that it was not adopted.
+    expect(issue(fake, 12).description).not.toContain('fu:outcome');
     expect(issue(fake, m).description).toContain('### Updated\n- #7 Share load-test results of the new gateway — done');
   });
 
   it('rejects updates that make no sense', async () => {
     const { svc } = await setup();
     const u = (l: string) => parseUpdate(l, opts)!;
-    await expect(svc.applyUpdate(u('DONE #13'))).rejects.toThrow(/is a standard/);
-    await expect(svc.applyUpdate(u('ADOPTED #13 Mars'))).rejects.toThrow(/no crew "Mars"/);
-    await expect(svc.applyUpdate(u('ADOPTED #7 Payments'))).rejects.toThrow(/not a standard/);
+    await expect(svc.applyUpdate(u('ADOPTED #7 Payments'))).rejects.toThrow(/not an adoption issue/);
     await expect(svc.applyUpdate(u('UPDATE #7'))).rejects.toThrow(/no text/);
     await expect(svc.applyUpdate(u('DONE #1'))).rejects.toThrow(/is a meeting/);
   });

@@ -7,12 +7,14 @@ import { UPDATE_LABEL, isMine, isOverdue, isTrackable, isWaiting, updateProblem,
 import type { GlUser } from './lib/gitlab';
 import { parseLine, parseUpdate, updateNote } from './lib/parser';
 import { humanDue, todayIso } from './lib/dates';
-import { AppCtx, useApp as useAppSafe, type Ctx, type PrepPreset, type View } from './components/ctx';
+import { AppCtx, useApp as useAppSafe, type CatalogState, type Ctx, type FullFocus, type PrepPreset, type StdPreset, type View } from './components/ctx';
 import { Capture } from './components/Capture';
 import { Prepare } from './components/Prepare';
-import { Drawer } from './components/Drawer';
+import { QuickLook } from './components/QuickLook';
+import { ItemScreen } from './components/ItemScreen';
 import { SettingsView } from './components/SettingsView';
-import { DecisionsView, FocusView, MeetingsView, MineView, StandardsView, WaitingView } from './components/Views';
+import { DecisionsView, FocusView, MeetingsView, MineView, WaitingView } from './components/Views';
+import { Standards } from './components/Standards';
 import { KindTag } from './components/ui';
 import { ArchMark } from './components/ArchMark';
 
@@ -38,14 +40,29 @@ const TITLES: Record<View, string> = {
   settings: 'Settings',
 };
 
-function viewFromHash(): View {
+function viewFromHash(fallback: View = 'focus'): View {
   const h = location.hash.replace('#/', '') as View;
-  return h in TITLES ? h : 'focus';
+  return h in TITLES ? h : itemFromHash() ? fallback : 'focus';
 }
+
+/** "#/item/12" → 12 */
+function itemFromHash(): number | null {
+  const m = location.hash.match(/^#\/item\/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+const typing = (t: EventTarget | null) => {
+  const el = t as HTMLElement | null;
+  if (!el) return false;
+  if (el instanceof HTMLInputElement) return !/^(checkbox|radio|button|submit)$/.test(el.type);
+  return el.isContentEditable || /^(TEXTAREA|SELECT)$/.test(el.tagName);
+};
 
 function makeService(s: Settings) {
   if (s.demo) {
     const fake = createFakeGitLab(undefined, true);
+    // Demo mode only: lets a tester change "GitLab" behind the app's back (e.g. to try the edit-conflict banner).
+    (window as unknown as { __archDemo?: unknown }).__archDemo = fake;
     return new Service(new GitLab(s.baseUrl, s.token, fake.fetch), s);
   }
   return new Service(new GitLab(s.baseUrl, s.token), s);
@@ -59,7 +76,14 @@ export default function App() {
   const [error, setError] = useState('');
   const [items, setItems] = useState<Item[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
+  const [nav, setNav] = useState<number[]>([]);
+  const [full, setFull] = useState<{ iid: number; focus?: FullFocus } | null>(() => {
+    const iid = itemFromHash();
+    return iid ? { iid } : null;
+  });
   const [prepPreset, setPrepPreset] = useState<{ id: number; preset?: PrepPreset }>({ id: 0 });
+  const [stdPreset, setStdPreset] = useState<{ id: number; preset?: StdPreset }>({ id: 0 });
+  const [catalog, setCatalog] = useState<CatalogState>({ loading: false });
   const [toasts, setToasts] = useState<{ id: number; msg: string; kind: 'ok' | 'err' }[]>([]);
   const [busy, setBusy] = useState(0);
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
@@ -70,6 +94,24 @@ export default function App() {
     setToasts((t) => [...t, { id, msg, kind }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'err' ? 8000 : 2500);
   }, []);
+
+  const loadCatalog = useCallback(
+    async (force = false) => {
+      if (!svc || !svc.std.configured) return;
+      if (!force && catalog.catalog) return;
+      setCatalog((c) => ({ ...c, loading: true, error: undefined }));
+      try {
+        const cat = await svc.std.loadCatalog();
+        setCatalog({ catalog: cat, loading: false });
+      } catch (e) {
+        setCatalog((c) => ({ ...c, loading: false, error: (e as Error).message }));
+        throw e;
+      }
+    },
+    [svc, catalog.catalog],
+  );
+
+  useEffect(() => setCatalog({ loading: false }), [svc]);
 
   const reload = useCallback(async () => {
     if (!svc) return;
@@ -91,7 +133,11 @@ export default function App() {
   }, [svc, reload]);
 
   useEffect(() => {
-    const onHash = () => setView(viewFromHash());
+    const onHash = () => {
+      const iid = itemFromHash();
+      setFull((f) => (iid ? (f?.iid === iid ? f : { iid }) : null));
+      setView((v) => viewFromHash(v));
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
@@ -99,7 +145,18 @@ export default function App() {
   const go = useCallback((v: View) => {
     location.hash = `#/${v}`;
     setView(v);
+    setFull(null);
+    if (v === 'capture') setSelected(null);
   }, []);
+
+  const openFull = useCallback((iid: number, focus?: FullFocus) => {
+    setFull({ iid, focus });
+    if (location.hash !== `#/item/${iid}`) location.hash = `#/item/${iid}`;
+  }, []);
+  const closeFull = useCallback(() => {
+    setFull(null);
+    location.hash = `#/${view}`;
+  }, [view]);
 
   const run = useCallback(
     async <T,>(label: string, fn: () => Promise<T>) => {
@@ -151,12 +208,24 @@ export default function App() {
           me,
           users,
           userMap,
-          openItem: (it) => setSelected(typeof it === 'number' ? it : it.iid),
+          openItem: (it, list) => {
+            setSelected(typeof it === 'number' ? it : it.iid);
+            if (list) setNav(list);
+          },
+          openFull,
+          selected: selected ?? undefined,
           upsert,
           reload,
           toast,
           go,
           run,
+          catalog,
+          loadCatalog: (force) => loadCatalog(force).catch(() => undefined),
+          standards: (preset) => {
+            setStdPreset((p) => ({ id: p.id + 1, preset }));
+            setSelected(null);
+            go('standards');
+          },
           prepare: (preset) => {
             setPrepPreset((p) => ({ id: p.id + 1, preset }));
             setSelected(null);
@@ -173,22 +242,45 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName;
+      if (full || view === 'capture' || document.querySelector('.fs')) return; // full-screen editors handle their own keys
       if (e.key === 'Escape') setSelected(null);
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (typing(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (selected !== null) {
+        const k = nav.indexOf(selected);
+        const open = (focus?: FullFocus) => {
+          e.preventDefault(); // or the key would be typed into the editor that opens
+          openFull(selected, focus);
+        };
+        if (e.key === 'Enter' && !(e.target as HTMLElement).closest?.('button, a, .row')) return open();
+        if (e.key === 'e' || e.key === 'E') return open('desc');
+        if (e.key === 'c' || e.key === 'C') return open('comment');
+        if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && k >= 0) {
+          e.preventDefault();
+          const n = nav[k + (e.key === 'ArrowDown' ? 1 : -1)];
+          if (n !== undefined) {
+            setSelected(n);
+            document.querySelector<HTMLElement>(`.row[data-iid="${n}"]`)?.scrollIntoView({ block: 'nearest' });
+          }
+          return;
+        }
+      }
       if (e.key === '/') {
         e.preventDefault();
         document.getElementById('quickadd')?.focus();
       }
-      if (e.key === 'n') go('capture');
+      if (e.key === 'n') {
+        e.preventDefault(); // or the n would land in the meeting title
+        go('capture');
+      }
       if (e.key === 'p') {
+        e.preventDefault();
         setPrepPreset((p) => ({ id: p.id + 1 }));
         go('prepare');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [go]);
+  }, [go, full, view, selected, nav, openFull]);
 
   if (!svc || view === 'settings' || status === 'error') {
     return (
@@ -217,13 +309,13 @@ export default function App() {
     focus: open.filter((i) => isOverdue(i, today) || i.due === today).length,
     mine: open.filter((i) => isMine(i, me)).length,
     waiting: open.filter((i) => isWaiting(i, me)).length,
-    standards: items.filter((i) => i.kind === 'standard' && i.open).length,
+    standards: items.filter((i) => i.kind === 'adoption' && i.open).length,
   };
   const sel = selected !== null ? items.find((i) => i.iid === selected) : undefined;
 
   return (
     <AppCtx.Provider value={ctx}>
-      <div className={`app ${sel ? 'with-drawer' : ''}`}>
+      <div className={`app ${sel && !full ? 'with-drawer' : ''}`}>
         <nav className="nav">
           <div className="brand">
             <ArchMark size={26} />
@@ -234,7 +326,7 @@ export default function App() {
             + Meeting notes <kbd>n</kbd>
           </button>
           {VIEWS.map((v) => (
-            <button key={v.id} className={`nav-item ${view === v.id ? 'active' : ''}`} onClick={() => (v.id === 'prepare' ? ctx.prepare() : go(v.id))}>
+            <button key={v.id} className={`nav-item ${view === v.id ? 'active' : ''}`} onClick={() => (v.id === 'prepare' ? ctx.prepare() : v.id === 'standards' ? ctx.standards() : go(v.id))}>
               <span className="nav-icon">{v.icon}</span>
               {v.label}
               {counts[v.id] ? <span className={`nav-count ${v.id === 'focus' ? 'alert' : ''}`}>{counts[v.id]}</span> : null}
@@ -282,14 +374,24 @@ export default function App() {
             {view === 'mine' && <MineView />}
             {view === 'waiting' && <WaitingView />}
             {view === 'decisions' && <DecisionsView />}
-            {view === 'standards' && <StandardsView />}
+            {view === 'standards' && <Standards key={stdPreset.id} preset={stdPreset.preset} />}
             {view === 'meetings' && <MeetingsView />}
             {view === 'capture' && <Capture />}
             {view === 'prepare' && <Prepare key={prepPreset.id} preset={prepPreset.preset} />}
           </div>
         </main>
 
-        {sel && <Drawer item={sel} onClose={() => setSelected(null)} />}
+        {sel && !full && <QuickLook item={sel} onClose={() => setSelected(null)} />}
+        {full && (
+          <ItemScreen
+            key={full.iid + (full.focus ?? '')}
+            iid={full.iid}
+            focus={full.focus}
+            nav={nav.includes(full.iid) ? nav : [full.iid]}
+            backLabel={TITLES[view]}
+            onClose={closeFull}
+          />
+        )}
         <datalist id="users">
           {users.map((u) => (
             <option key={u} value={u} />

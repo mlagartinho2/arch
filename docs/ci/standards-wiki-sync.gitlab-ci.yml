@@ -1,0 +1,24 @@
+# Add this job to the .gitlab-ci.yml of your STANDARDS repository (not Arch's).
+# It mirrors every standard on the default branch to the wiki after each merge, so the wiki stays
+# current even if nobody opens Arch. Arch shows the same result either way.
+#
+# Setup:
+#   1. In the Arch repo: npm run build:sync, then copy dist-sync/sync-standards-wiki.mjs to ci/ in the standards repo.
+#   2. Create a project (or group) access token with the `api` scope and at least the Developer role on the wiki's
+#      project or group. Add it as a masked CI/CD variable named ARCH_WIKI_TOKEN.
+#   3. Adjust the variables below to match Arch's settings.
+sync-standards-wiki:
+  image: node:22-alpine
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - standards/**/*.md
+    - if: $CI_PIPELINE_SOURCE == "web"   # run manually with ARCH_FORCE=1 to republish everything
+  variables:
+    ARCH_STANDARDS_FOLDER: standards
+    ARCH_WIKI_KIND: project              # or: group (Premium/Ultimate)
+    ARCH_WIKI_PATH: ""                   # empty = this project's wiki; for a group wiki, the group path
+    ARCH_WIKI_PREFIX: standards
+    # ARCH_CATEGORIES: "api=API,react=React,devops=DevOps,security=Security & vulnerabilities"
+  script:
+    - node ci/sync-standards-wiki.mjs

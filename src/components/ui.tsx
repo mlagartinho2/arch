@@ -1,24 +1,18 @@
 import type { ReactNode } from 'react';
 import type { GlUser } from '../lib/gitlab';
-import type { Item, Kind, StdStatus } from '../lib/model';
+import type { Item, Kind } from '../lib/model';
 import { daysBetween, humanDue } from '../lib/dates';
 
-export const KIND_LABEL: Record<Kind, string> = {
+/** 'standard' is a parsed "STANDARD:" line: a standard still to be written. */
+export const KIND_LABEL: Record<Kind | 'standard', string> = {
   action: 'Action',
   decision: 'Decision',
-  standard: 'Standard',
   meeting: 'Meeting',
+  adoption: 'Adoption',
+  standard: 'Standard to write',
 };
 
-export const STD_STEPS: StdStatus[] = ['draft', 'review', 'published', 'adopted'];
-export const STD_LABEL_TEXT: Record<StdStatus, string> = {
-  draft: 'Draft',
-  review: 'In review',
-  published: 'Adopting',
-  adopted: 'Adopted',
-};
-
-export function KindTag({ kind }: { kind: Kind }) {
+export function KindTag({ kind }: { kind: Kind | 'standard' }) {
   return <span className={`kind kind-${kind}`}>{KIND_LABEL[kind]}</span>;
 }
 
